@@ -1,0 +1,11 @@
+/bloat
+/newuid
+/newuid-chroot
+/*.o
+/plain
+/plain-32-0
+/plain-32-1
+/plain-32-2
+/plain-32-3
+/seccomp
+/shellcode.bin

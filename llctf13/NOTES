@@ -1,0 +1,335 @@
+Nickolai Zeldovich
+October 19, 2013
+
+---
+
+prep:
+  # sysctl -w kernel.randomize_va_space=0
+  # echo -n /home/nickolai/sp/talks/llctf13/plain > /sys/kernel/security/apparmor/.remove
+  clean up /tmp
+  terminal 115 wide, or at least 107
+  % rxvt-font.sh xft:Monospace-NN
+
+  # mkswap /swapfile
+  # swapon /swapfile
+
+  % cd ~/tmp/
+  % wget http://storage.googleapis.com/nativeclient-mirror/nacl/nacl_sdk/nacl_sdk.zip
+  % unzip nacl_sdk.zip
+  % cd nacl_sdk
+  % ./naclsdk update
+
+  # adduser ndemo
+  Password: my standand password
+
+---
+
+outline:
+  unix security model
+    actor: process
+    objects: files, directories, processes
+    principal: user ID (also group ID)
+    object permissions: user ID associated with object
+    file permissions
+  bootstrap: login
+    password file
+    login runs as root
+    /etc/passwd and /etc/shadow contain user's uid and hashed password
+    login calls setuid() after checking password and looking up uid
+  re-gaining privileges: "su"
+    how does this work?  setuid-root binary.  ls -l /bin/su
+    setuid binaries work for any uid.
+      cp /bin/sh /tmp/foo
+      chown www-data /tmp/foo
+      chmod u+s /tmp/foo
+      run /tmp/foo from my account
+      id
+  authentication
+    prep: ssh ndemo@localhost, delete .ssh/*
+
+    ## authentication with passwords
+
+    ssh ndemo@localhost
+    ## when should you say yes?  what's the danger?
+    enter password
+    exit
+
+    ## authentication with ssh keys
+
+    ssh-keygen
+    cd .ssh
+    cat id_rsa.pub
+    vi authorized_keys
+    ## paste in public key
+    ssh ndemo@localhost
+
+  how to deal with a vulnerable service?
+    mitigate buffer overflows
+    sandbox the code to give it less privileges
+
+---
+
+Buffer overflows and defenses
+
+less plain.c
+less net.c
+less req.c
+
+plain-32-0: executable stack, no stackguard/ssp
+  % make clean
+  % make plain-32-0
+  % ./clean-env.sh ./plain-32-0
+  % cat /proc/$(pgrep plain-)/maps
+  ## 32-bit executable on my 64-bit laptop/OS, for simplicity
+
+  % less exploit-0.py
+  % less shellcode.S
+
+  % ls /tmp
+  % make shellcode.bin
+  % ./exploit-0.py localhost 1234
+  % ls /tmp
+
+  ## scroll up to stack diagram, show executable stack
+
+plain-32-1: NX stack, no stackguard/ssp
+  % make plain-32-1
+  % ./clean-env.sh ./plain-32-1
+  % cat /proc/$(pgrep plain-)/maps
+  ## show non-executable stack
+
+  % rm /tmp/ATTACK
+  % ls /tmp
+  % ./exploit-0.py localhost 1234
+  % less exploit-1.py
+  ## return to libc's creat()
+  % ./exploit-1.py localhost 1234
+
+plain-32-2: NX stack, stackguard/ssp
+  % make plain-32-2
+  % ./clean-env.sh ./plain-32-2
+  % ./exploit-1.py localhost 1234
+  ## how to exploit?  guess cookies, or non-returnaddr overflow.
+
+ASLR
+  % sysctl -w kernel.randomize_va_space=2     ## 2 randomizes brk
+  run "./plain-32-2" several times  (no clean-env.sh this time!)
+  % cat /proc/$(pgrep plain-)/maps
+  ## libc moves around
+
+  ## how to exploit?  heap spraying, or memory leaks, or guess.
+
+plain-32-3: gcc -fPIC -pie
+  ## program code can move too, if it's PIC/PIE
+  % make plain-32-3
+  run "./plain-32-3" several times
+  % cat /proc/$(pgrep plain-)/maps
+  ## problems: few bits of randomness; more on 64-bit but not great either.
+
+---
+
+sandboxing: setuid, chroot, seccomp, apparmor, nacl
+
+% make
+% echo my secret > /tmp/ss
+
+plain
+  % ./plain
+  % telnet localhost 1234
+  ls /tmp
+  read /tmp/ss
+  create /tmp/ss2
+  exec ps
+  ^D
+
+  % ls /tmp
+  % cat /tmp/ss2
+
+newuid
+  % less newuid.c
+  % ./newuid
+  ## need to be root
+  ## might need to bind low ports before setuid'ing
+  % sudo ./newuid
+  % telnet localhost 1234
+  read /tmp/ss
+  ^D
+
+  % chmod 600 /tmp/ss
+  % telnet localhost 1234
+  read /tmp/ss
+  read /etc/passwd
+  ^D
+
+newuid-chroot
+  ## explain why we need chroot: setuid binaries, ambient priv like /etc/passwd
+  % less newuid-chroot.c
+  % sudo ./newuid-chroot
+  % telnet localhost 1234
+  ls /
+  create /foo
+  read /foo
+  ^D
+
+  % ls /
+  % ls /tmp/myroot
+
+  % telnet localhost 1234
+  ls /
+  create /../escape
+  ls /
+  ^D
+
+  % ls /tmp
+  % ls /tmp/myroot
+
+even easier to do all this in python
+  look at run-daemon.py
+
+chroot plain
+  ## annoying to modify program in some cases
+  ## can we chroot and then run the original plain?
+  ## requires explicitly copying shared libraries, etc into chroot dir
+
+  % su
+  # cp plain /tmp/myroot
+  # chroot /tmp/myroot /plain
+
+  # ldd /tmp/myroot/plain
+  # mkdir /tmp/myroot/lib
+  # mkdir /tmp/myroot/lib/x86_64-linux-gnu
+  # mkdir /tmp/myroot/lib64
+  # cp /lib/x86_64-linux-gnu/libc.so.6 /tmp/myroot/lib/x86_64-linux-gnu/libc.so.6
+  # cp /lib64/ld-linux-x86-64.so.2 /tmp/myroot/lib64/ld-linux-x86-64.so.2
+  # chroot /tmp/myroot /plain
+
+  % telnet localhost 1234
+  ls /
+  ^D
+
+  % ps aux | grep -w plain
+  ## root can escape chroot via recursive chroot, load kernel modules, ..
+
+  # chroot --userspec=60000:60000 /tmp/myroot /plain
+  % ps aux | grep -w plain
+
+seccomp
+  ## download policy into the kernel
+  ## no need for root access: any process can restrict itself
+  ## helpful for reducing kernel attack surface from suspect programs
+
+  % less seccomp.c
+  % ./seccomp
+  % vi net.c
+  ## add accept
+
+  % make
+  % ./seccomp 
+  % telnet localhost 1234
+  ls /tmp
+  read /tmp/ss
+  read /tmp/ss2
+  ^D
+
+  ## add open
+  % make
+  % ./seccomp
+  % telnet localhost 1234
+  ls /tmp
+  read /tmp/ss
+  read /tmp/ss2
+  exec ps
+  ^D
+
+  ## example of where seccomp isn't so great:
+  ##   string arguments (perhaps libseccomp limitation)
+  ##   complex argument data structures
+  ##   dependency on current state (symlinks, etc)
+
+apparmor
+  ## centralized policy setting for programs
+  ## requires root, unlike seccomp
+
+  % cat apparmor-policy
+  % cat apparmor-load.sh
+  % sudo ./apparmor-load.sh
+  % ./plain
+
+  ## add:
+  ##   /lib/** rm,
+  % sudo ./apparmor-load.sh
+  % ./plain
+
+  ## add "network inet stream,"
+  % sudo ./apparmor-load.sh
+  % ./plain
+  % telnet localhost 1234
+  ls /tmp
+  ls /
+  ^D
+  % dmesg | tail
+
+  ## add "/tmp/ r,"
+  % sudo ./apparmor-load.sh
+  % ./plain
+  % telnet localhost 1234
+  ls /tmp
+  read /tmp/ss
+  ^D
+  % dmesg | tail
+
+  ## add "/tmp/scratch/ r,"
+  ## add "/tmp/scratch/** rw,"
+  % sudo ./apparmor-load.sh
+  % mkdir /tmp/scratch
+  % ./plain
+  % telnet localhost 1234
+  ls /tmp
+  create /tmp/XX
+  ls /tmp
+  ls /tmp/scratch
+  create /tmp/scratch/foo
+  ls /tmp/scratch
+  read /tmp/scratch/foo
+  exec ps
+  ^D
+
+  # talk about inheriting profile on exec (or not)
+  # talk about needing root for apparmor
+
+native client
+  cd nacl
+  make
+  ~/tmp/nacl_sdk/pepper_30/tools/sel_ldr.py ./nacl/newlib/Debug/words_x86_32.nexe
+
+  ## or more explicitly:
+  ~/tmp/nacl_sdk/pepper_30/tools/sel_ldr_x86_32 \
+    -B ~/tmp/nacl_sdk/pepper_30/tools/irt_core_x86_32.nexe \
+    ./newlib/Debug/words_x86_32.nexe < input.txt
+
+  add to the top of words.c:
+    int fd = open("/etc/passwd", O_RDONLY);
+    printf("fd %d\n", fd);
+    close(fd);
+
+  ## pass -a to sel_ldr_x86_32 to allow file system access
+
+resource use / DoS attacks
+  ./bloat
+  ulimit -a
+  ulimit -v 1000000
+  ./bloat
+
+no concrete code example:
+  SElinux
+  Capsicum
+
+MacOSX has a mechanism similar to apparmor, called Seatbelt
+
+what isn't fixed by OS-level sandboxing?
+  sandbox might be incomplete
+  information disclosure from within a service
+  privsep within a service between users
+  browser-level vulnerabilities (XSS)
+  how to fix them?
+

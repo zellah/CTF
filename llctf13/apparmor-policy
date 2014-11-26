@@ -1,0 +1,4 @@
+# Ref: http://wiki.apparmor.net/index.php/QuickProfileLanguage
+
+profile /home/nickolai/sp/talks/llctf13/plain {
+}

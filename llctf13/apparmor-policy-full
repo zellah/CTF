@@ -1,0 +1,14 @@
+# Ref: http://wiki.apparmor.net/index.php/QuickProfileLanguage
+
+profile /home/nickolai/sp/talks/llctf13/plain
+#flags=(complain)
+{
+  network inet stream,
+  /lib/**     rm,
+  /tmp/       r,
+  /tmp/**     r,
+  /tmp/xd/**  rw,
+
+  # talk about inheriting profile on exec (or not)
+  # talk about needing root for apparmor
+}
